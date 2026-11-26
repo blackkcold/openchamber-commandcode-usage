@@ -1,6 +1,6 @@
 {
   "name": "openchamber-commandcode-usage",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Command Code (GOAT) usage inside OpenChamber: 5-hour, weekly and monthly windows as a native usage provider.",
   "license": "MIT",
   "private": true,
@@ -32,7 +32,7 @@
         "provides": ["quota"]
       },
       "quota": {
-        "providers": []
+        "providers": ["commandcode"]
       }
     }
   },

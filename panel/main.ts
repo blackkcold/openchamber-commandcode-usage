@@ -12,8 +12,7 @@ type UsageReport = {
   fetchedAt: number;
 };
 
-type StatusPayload = { configured: boolean; hint: string | null; source: string | null };
-type UsagePayload = { ok: boolean; configured?: boolean; error?: string; report?: UsageReport; source?: string };
+type StatusPayload = { configured: boolean; hint: string | null; source: string | null };type UsagePayload = { ok: boolean; configured?: boolean; error?: string; report?: UsageReport; source?: string };
 
 const host = connectHost();
 const root = document.querySelector('#root');
@@ -99,7 +98,7 @@ body.append(footer);
 const settings = el('section', 'settings');
 body.append(settings);
 
-const settingsToggle = el('button', 'link-button', '设置 API Key');
+const settingsToggle = el('button', 'link-button', '用其他 API Key 覆盖');
 settingsToggle.type = 'button';
 settings.append(settingsToggle);
 
@@ -116,7 +115,7 @@ input.placeholder = '粘贴 Command Code API Key';
 const actions = el('div', 'actions');
 const saveButton = el('button', 'button primary', '保存');
 saveButton.type = 'submit';
-const clearButton = el('button', 'button', '清除');
+const clearButton = el('button', 'button', '清除覆盖');
 clearButton.type = 'button';
 actions.append(saveButton, clearButton);
 settingsPanel.append(hint, input, actions);
@@ -212,6 +211,14 @@ const renderStatus = (): void => {
 
 let lastReport: UsageReport | null = null;
 
+const SOURCE_LABEL: Record<string, string> = {
+  host: 'Providers 页面（OpenCode 凭据库）',
+  opencode: 'OpenCode 凭据库（只读）',
+  stored: '扩展面板保存的覆盖密钥',
+  env: '环境变量 COMMAND_CODE_API_KEY',
+  'auth-file': '~/.commandcode/auth.json',
+};
+
 const renderAll = (): void => {
   if (lastReport) {
     renderWindows(lastReport);
@@ -220,14 +227,14 @@ const renderAll = (): void => {
     windowsBox.replaceChildren(el(
       'div',
       'empty',
-      status.configured ? '正在读取用量…' : '填入 API Key 后显示 5 小时 / 每周 / 每月额度',
+      status.configured ? '正在读取用量…' : '在 设置 → Providers 里填入 Command Code API Key 后即可显示',
     ));
     footer.replaceChildren();
   }
   renderStatus();
   hint.textContent = status.configured
-    ? `当前密钥 ${status.hint ?? ''}${status.source === 'env' ? '（来自环境变量）' : status.source === 'auth-file' ? '（来自 ~/.commandcode/auth.json）' : ''}`
-    : '密钥只保存在本机扩展数据目录，权限 0600。';
+    ? `密钥来源：${SOURCE_LABEL[status.source ?? ''] ?? status.source ?? '未知'}${status.hint ? `（${status.hint}）` : ''}。这里的覆盖密钥优先级最高。`
+    : '尚未找到密钥。可在此粘贴，或在 设置 → Providers 里添加 CommandCode。';
 };
 
 const loadStatus = async (): Promise<void> => {
@@ -272,7 +279,7 @@ refreshButton.addEventListener('click', () => {
 
 settingsToggle.addEventListener('click', () => {
   settingsPanel.hidden = !settingsPanel.hidden;
-  settingsToggle.textContent = settingsPanel.hidden ? '设置 API Key' : '收起';
+  settingsToggle.textContent = settingsPanel.hidden ? '用其他 API Key 覆盖' : '收起';
   if (!settingsPanel.hidden) input.focus();
 });
 
@@ -289,7 +296,7 @@ settingsPanel.addEventListener('submit', (event) => {
       await request('POST', '/credential', { key });
       input.value = '';
       settingsPanel.hidden = true;
-      settingsToggle.textContent = '设置 API Key';
+      settingsToggle.textContent = '用其他 API Key 覆盖';
       setNotice('密钥已保存', 'info');
       await loadStatus();
       await loadUsage();
@@ -308,7 +315,7 @@ clearButton.addEventListener('click', () => {
       lastReport = null;
       await loadStatus();
       renderAll();
-      setNotice('已清除保存的密钥', 'info');
+      setNotice('已清除覆盖密钥，改回 OpenChamber 保存的凭据', 'info');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error), 'error');
     }

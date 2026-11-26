@@ -103,6 +103,55 @@ const clearStoredKey = () => {
 
 const KEY_FIELD = /^(api[_-]?key|key|token|access[_-]?token|secret)$/i;
 
+// OpenChamber hands the stored provider credential to the quota call, so the
+// usual path never touches this. It exists for the extension panel, which has
+// no access to that credential, and is read-only: OpenCode owns the file.
+const OPENCODE_CREDENTIAL_TTL_MS = 60_000;
+let opencodeKeyCache = { at: 0, key: null };
+
+const opencodeDbCandidates = () => {
+  const dataHome = str(process.env.XDG_DATA_HOME) ?? path.join(os.homedir(), '.local', 'share');
+  const explicit = str(process.env.OPENCODE_DB_PATH);
+  return explicit ? [explicit] : [path.join(dataHome, 'opencode', 'opencode.db')];
+};
+
+const readOpencodeCredentialKey = async () => {
+  if (Date.now() - opencodeKeyCache.at < OPENCODE_CREDENTIAL_TTL_MS) return opencodeKeyCache.key;
+
+  let key = null;
+  try {
+    const { DatabaseSync } = await import('node:sqlite');
+    for (const candidate of opencodeDbCandidates()) {
+      if (!fs.existsSync(candidate)) continue;
+      let db = null;
+      try {
+        db = new DatabaseSync(candidate, { readOnly: true });
+        const row = db.prepare(
+          'select value from credential where integration_id = ? and active = 1 order by time_updated desc limit 1',
+        ).get('commandcode');
+        if (row?.value) {
+          const parsed = JSON.parse(row.value);
+          key = str(parsed?.key) ?? str(parsed?.access);
+        }
+      } catch {
+        // locked, moved, or a schema this build does not know: try the next file
+      } finally {
+        try {
+          db?.close();
+        } catch {
+          // already closed
+        }
+      }
+      if (key) break;
+    }
+  } catch {
+    // node:sqlite is unavailable (older Node), the read-only fallback is skipped
+  }
+
+  opencodeKeyCache = { at: Date.now(), key };
+  return key;
+};
+
 const findKeyDeep = (value, depth = 0) => {
   if (depth > 4 || value === null || typeof value !== 'object') return null;
   const entries = Array.isArray(value) ? value.map((item, index) => [String(index), item]) : Object.entries(value);
@@ -132,14 +181,16 @@ const readAuthFileKey = () => {
   return null;
 };
 
-const resolveKey = (supplied) => {
-  if (str(supplied)) return { key: str(supplied), source: 'supplied' };
+const resolveKey = async (supplied) => {
+  if (str(supplied)) return { key: str(supplied), source: 'host' };
   const stored = readStoredKey();
   if (stored) return { key: stored, source: 'stored' };
   const fromEnv = str(process.env.COMMAND_CODE_API_KEY);
   if (fromEnv) return { key: fromEnv, source: 'env' };
   const fromFile = readAuthFileKey();
   if (fromFile) return { key: fromFile, source: 'auth-file' };
+  const fromOpencode = await readOpencodeCredentialKey();
+  if (fromOpencode) return { key: fromOpencode, source: 'opencode' };
   return { key: null, source: null };
 };
 
@@ -324,22 +375,28 @@ const toQuotaUsage = (report) => {
     const window = report.windows.weekly;
     windows.weekly = spendWindow(window, ONE_WEEK, percentOf(window.used, window.cap));
   }
+
   const monthly = report.windows.monthly;
-  if (monthly) {
-    const cap = monthly.cap;
-    const used = cap === null ? null : Math.max(0, cap - monthly.remaining);
-    windows.monthly = {
-      usedPercent: cap !== null && used !== null ? percentOf(used, cap) : null,
-      resetAt: monthly.resetAt,
-      valueLabel: cap === null
-        ? `${money(monthly.remaining)} 剩余`
-        : `${money(monthly.remaining)} / ${money(cap)}`,
-    };
-  }
   const remaining = report.credits.monthlyRemaining;
-  if (remaining !== null) {
+
+  // The server reports what is left of the monthly allowance, never how much
+  // was spent. With a known cap both numbers are the same fact, so the month
+  // is one window. Without a cap there is no percentage to draw and a plain
+  // balance row is the only thing left; it also covers accounts that report a
+  // remaining balance but no plan.
+  if (monthly && monthly.cap !== null) {
+    const cap = monthly.cap;
+    const spent = Math.max(0, cap - monthly.remaining);
+    windows.monthly = {
+      usedPercent: percentOf(spent, cap),
+      resetAt: monthly.resetAt,
+      valueLabel: `${money(monthly.remaining)} / ${money(cap)}`,
+      value: { kind: 'spend', spent, limit: cap },
+    };
+  } else if (remaining !== null) {
     windows.credits_balance = { usedPercent: null, valueLabel: money(remaining) };
   }
+
   return { windows };
 };
 
@@ -388,7 +445,7 @@ const parseJson = (body) => {
 const maskKey = (key) => (key && key.length > 8 ? `…${key.slice(-4)}` : '已配置');
 
 const handleUsage = async (response) => {
-  const { key, source } = resolveKey(null);
+  const { key, source } = await resolveKey(null);
   if (!key) {
     send(response, 200, { ok: true, configured: false, error: '尚未填写 Command Code API Key', usage: null });
     return;
@@ -409,7 +466,7 @@ const handleQuota = async (response, body) => {
     : null;
   const suppliedKey = isRecord(supplied) ? (str(supplied.key) ?? str(supplied.access)) : null;
 
-  const { key } = resolveKey(suppliedKey);
+  const { key } = await resolveKey(suppliedKey);
   if (!key) {
     send(response, 200, { ok: true, data: failureData(false, '尚未填写 API Key：打开 Command Code Usage 面板粘贴密钥') });
     return;
@@ -447,7 +504,7 @@ const handleCredentialSave = async (response, body) => {
   }
 };
 
-const server = http.createServer((request, response) => {
+const server = http.createServer(async (request, response) => {
   if (request.headers.authorization !== `Bearer ${TOKEN}`) {
     send(response, 401, { ok: false, error: 'unauthorized' });
     return;
@@ -461,7 +518,7 @@ const server = http.createServer((request, response) => {
   }
 
   if (url.pathname === '/status' && request.method === 'GET') {
-    const { key, source } = resolveKey(null);
+    const { key, source } = await resolveKey(null);
     send(response, 200, { ok: true, configured: Boolean(key), hint: key ? maskKey(key) : null, source });
     return;
   }
