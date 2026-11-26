@@ -137,20 +137,24 @@ try {
   assert.deepEqual(Object.keys(fromHost.usage.windows).sort(), ['5h', 'monthly', 'weekly']);
 
   const windows = fromHost.usage.windows;
+
+  // Percentage windows carry no valueLabel: the native card prints valueLabel
+  // in place of the percentage, so a dollar label there hid the number.
   assert.equal(windows['5h'].usedPercent.toFixed(4), '8.7857');
-  assert.equal(windows['5h'].valueLabel, '$1.23 / $14.00');
+  assert.equal(windows['5h'].valueLabel, undefined);
+  assert.equal(windows['5h'].value, undefined);
   assert.equal(windows['5h'].windowSeconds, 18_000);
-  assert.deepEqual(windows['5h'].value, { kind: 'spend', spent: 1.23, limit: 14 });
 
   assert.equal(windows.weekly.usedPercent, 31.25);
-  assert.equal(windows.weekly.valueLabel, '$12.50 / $40.00');
+  assert.equal(windows.weekly.valueLabel, undefined);
   assert.equal(windows.weekly.windowSeconds, 604_800);
 
-  // 3. The month is a single window with a known cap: 70 - 18.5 spent.
-  assert.equal(windows.monthly.valueLabel, '$18.50 / $70.00');
-  assert.equal(windows.monthly.value.limit, 70);
-  assert.equal(windows.monthly.value.spent.toFixed(4), '51.5000');
+  // 3. One month window, percentage only. The server meters credits against 70
+  //    for GOAT and the plan's dollars are a model-dependent reading, so the
+  //    card keeps the percentage and the panel shows the dollars.
   assert.equal(windows.monthly.usedPercent.toFixed(4), '73.5714');
+  assert.equal(windows.monthly.valueLabel, undefined);
+  assert.equal(windows.monthly.value, undefined);
   assert.equal(windows.monthly.resetAt, NOW + 12 * 86_400_000);
 
   // 4. Empty credentials fall back to the stored sources instead of failing.
@@ -158,25 +162,56 @@ try {
   assert.equal(withoutHost.configured, true);
   assert.equal(withoutHost.planLabel, 'GOAT');
 
-  // 5. An unknown plan keeps the balance row and drops the invented percentage.
+  // 5. A model with a smaller allowance rescales the same credits. The card's
+  //    percentage must not move; only the dollars in the panel change.
+  const switched = await call('POST', '/settings', { model: 'glm-5.2' });
+  assert.equal(switched.status, 200);
+  const afterSwitch = await readQuota({ commandcode: { type: 'api', key: HOST_KEY } }, 'contract-switch');
+  assert.equal(
+    afterSwitch.usage.windows.monthly.usedPercent.toFixed(4),
+    '73.5714',
+    'the percentage must not move when only the pricing model changes',
+  );
+  const panelAt70 = await call('GET', '/usage');
+  assert.equal(panelAt70.body.panel.rows[2].value, '$51.50 / $70');
+  assert.equal(panelAt70.body.panel.remaining, '$18.50');
+
+  const unknownSwitch = await call('POST', '/settings', { model: 'nope' });
+  assert.equal(unknownSwitch.status, 400, 'an unknown model is refused');
+  await call('POST', '/settings', { model: 'deepseek-v4.1-flash' });
+
+  // 6. An unknown plan keeps the balance row and drops the invented percentage.
   const unknownPlan = await readQuota({ commandcode: { type: 'api', key: 'sk-noplan-0001' } }, 'contract-noplan');
   assert.deepEqual(Object.keys(unknownPlan.usage.windows).sort(), ['5h', 'credits_balance', 'weekly']);
   assert.equal(unknownPlan.usage.windows.credits_balance.valueLabel, '$18.50');
   assert.equal(unknownPlan.usage.windows.credits_balance.usedPercent, null);
   assert.equal(unknownPlan.planLabel, 'enterprise-unknown', 'an unknown plan id falls back to itself as the label');
 
-  // 6. A rejected key never overwrites a working one.
+  // 7. The panel gets the dollars the native card no longer shows: each row is
+  //    used / cap like the two shorter windows, and the footer keeps what's left.
+  const panel = await call('GET', '/usage');
+  assert.equal(panel.body.ok, true);
+  assert.equal(panel.body.panel.planLabel, 'GOAT');
+  assert.deepEqual(panel.body.panel.rows.map((row) => row.label), ['5 小时', '本周', '本月']);
+  assert.equal(panel.body.panel.rows[0].value, '$1.23 / $14');
+  assert.equal(panel.body.panel.rows[2].value, '$73.57 / $100');
+  assert.equal(panel.body.panel.rows[2].percent.toFixed(4), '73.5714');
+  assert.equal(panel.body.panel.remaining, '$26.43');
+
+  // 8. A rejected key never overwrites a working one.
   const rejected = await call('POST', '/credential', { key: 'badkey-0000' });
   assert.equal(rejected.status, 401);
   const afterReject = await call('GET', '/status');
   assert.equal(afterReject.body.source, 'opencode', 'a rejected key must not be stored');
 
-  // 7. A saved override wins over every other source.
+  // 9. A saved override wins over every other source.
   const saved = await call('POST', '/credential', { key: 'sk-panel-override-7777' });
   assert.equal(saved.status, 200);
   const overrideStatus = await call('GET', '/status');
   assert.equal(overrideStatus.body.source, 'stored');
   assert.equal(overrideStatus.body.hint, '…7777');
+  assert.equal(overrideStatus.body.model.key, 'deepseek-v4.1-flash');
+  assert.ok(overrideStatus.body.models.length >= 2, 'the panel needs the model list');
 
   const cleared = await call('DELETE', '/credential');
   assert.equal(cleared.status, 200);
@@ -184,9 +219,16 @@ try {
   assert.equal(backToFallback.body.source, 'opencode');
 
   console.log('contract test passed');
+} catch (error) {
+  // Failures must reach the exit code: exiting from `finally` with a hard 0
+  // reported success for an assertion that never passed.
+  console.error(error);
+  process.exitCode = 1;
 } finally {
   mock.close();
   fs.rmSync(DB_PATH, { force: true });
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
-  process.exit(0);
+  // The service keeps its own listener open, so the loop never drains on its
+  // own. Exit explicitly, keeping whatever the assertion set.
+  process.exit(process.exitCode ?? 0);
 }

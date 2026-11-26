@@ -126,11 +126,11 @@
   var hasOnlyKeys = (value, keys) => Object.keys(value).every((key) => keys.includes(key));
   var isLabel = (value) => String(value) === value && value.length >= 1 && value.length <= GUEST_STATUS_CONTROL_LABEL_MAX;
   var isValue = (value) => String(value) === value && value.length >= 1 && value.length <= GUEST_STATUS_CONTROL_VALUE_MAX;
-  var isGuestStatusControls = (controls) => {
-    if (!Array.isArray(controls) || controls.length > GUEST_STATUS_CONTROLS_MAX)
+  var isGuestStatusControls = (controls2) => {
+    if (!Array.isArray(controls2) || controls2.length > GUEST_STATUS_CONTROLS_MAX)
       return false;
     const ids = /* @__PURE__ */ new Set();
-    for (const control of controls) {
+    for (const control of controls2) {
       if (!isControlObject(control) || !GUEST_STATUS_CONTROL_ID.test(control.id) || !isLabel(control.label))
         return false;
       if (control.disabled !== void 0 && control.disabled !== true && control.disabled !== false)
@@ -1177,14 +1177,14 @@
           popoverClosedListeners.delete(listener);
         };
       },
-      setStatusControls: (controls) => {
+      setStatusControls: (controls2) => {
         if (lastReady?.features?.statusControls !== true) {
           return Promise.reject(new HostRequestError("UNSUPPORTED", "This host does not support status controls."));
         }
-        if (!isGuestStatusControls(controls)) {
+        if (!isGuestStatusControls(controls2)) {
           return Promise.reject(new HostRequestError("HOST_REJECTED", "Status controls must have unique bounded ids and valid selected options."));
         }
-        return request2({ ...envelope, type: "status-controls", id: nextId(ids), payload: { controls } });
+        return request2({ ...envelope, type: "status-controls", id: nextId(ids), payload: { controls: controls2 } });
       },
       openPopover: (payload) => {
         if (lastReady?.features?.popovers !== true) {
@@ -1417,16 +1417,16 @@
         }
         return result;
       }),
-      generate: (input2) => {
-        const prompt = input2.prompt.trim();
-        const system = input2.system?.trim();
+      generate: (input) => {
+        const prompt = input.prompt.trim();
+        const system = input.system?.trim();
         if (prompt.length === 0 || prompt.length > GUEST_GENERATE_PROMPT_MAX) {
           return Promise.reject(new HostRequestError("HOST_REJECTED", `Prompt must be 1 to ${GUEST_GENERATE_PROMPT_MAX} characters.`));
         }
         if (system !== void 0 && (system.length === 0 || system.length > GUEST_GENERATE_SYSTEM_MAX)) {
           return Promise.reject(new HostRequestError("HOST_REJECTED", `System prompt must be 1 to ${GUEST_GENERATE_SYSTEM_MAX} characters.`));
         }
-        const maxOutputTokens = input2.maxOutputTokens === void 0 ? void 0 : Math.min(GUEST_GENERATE_OUTPUT_TOKENS_MAX, Math.max(1, Math.floor(input2.maxOutputTokens)));
+        const maxOutputTokens = input.maxOutputTokens === void 0 ? void 0 : Math.min(GUEST_GENERATE_OUTPUT_TOKENS_MAX, Math.max(1, Math.floor(input.maxOutputTokens)));
         if (maxOutputTokens !== void 0 && !Number.isFinite(maxOutputTokens)) {
           return Promise.reject(new HostRequestError("HOST_REJECTED", "maxOutputTokens must be a number."));
         }
@@ -1988,16 +1988,15 @@ ${GUEST_UI_LOOK_CSS}`;
     if (text !== void 0) node.textContent = text;
     return node;
   };
-  var money = (value) => `$${value.toFixed(2)}`;
   var resetText = (at) => {
     if (!at) return "";
     const delta = at - Date.now();
     if (delta <= 0) return "即将重置";
     const minutes = Math.max(1, Math.round(delta / 6e4));
-    if (minutes < 60) return `${minutes} 分钟后重置`;
+    if (minutes < 60) return `${minutes} 分钟后`;
     const hours = Math.floor(minutes / 60);
-    if (hours < 48) return `${hours} 小时 ${minutes % 60} 分后重置`;
-    return `${Math.floor(hours / 24)} 天后重置`;
+    if (hours < 48) return `${hours} 小时后`;
+    return `${Math.floor(hours / 24)} 天后`;
   };
   var percentText = (value) => value === null ? "—" : `${Math.round(value)}%`;
   var toneOf = (percent) => {
@@ -2029,9 +2028,8 @@ ${GUEST_UI_LOOK_CSS}`;
   var header = el2("header", "header");
   shell.append(header);
   var title = el2("div", "title");
-  var titleText = el2("span", "title-text", "Command Code");
-  var badge = el2("span", "badge", "未配置");
-  title.append(titleText, badge);
+  var badge = el2("span", "badge", "—");
+  title.append(el2("span", "title-text", "Command Code"), badge);
   header.append(title);
   var refreshButton = el2("button", "icon-button", "刷新");
   refreshButton.type = "button";
@@ -2045,66 +2043,50 @@ ${GUEST_UI_LOOK_CSS}`;
   body.append(windowsBox);
   var footer = el2("div", "footer");
   body.append(footer);
-  var settings = el2("section", "settings");
-  body.append(settings);
-  var settingsToggle = el2("button", "link-button", "用其他 API Key 覆盖");
-  settingsToggle.type = "button";
-  settings.append(settingsToggle);
-  var settingsPanel = el2("form", "settings-panel");
-  settingsPanel.hidden = true;
-  settings.append(settingsPanel);
-  var hint = el2("p", "hint");
-  var input = el2("input", "input");
-  input.type = "password";
-  input.autocomplete = "off";
-  input.spellcheck = false;
-  input.placeholder = "粘贴 Command Code API Key";
-  var actions = el2("div", "actions");
+  var controls = el2("section", "controls");
+  body.append(controls);
+  var modelField = el2("label", "field");
+  modelField.append(el2("span", "field-label", "计价模型"));
+  var modelSelect = el2("select", "select");
+  modelField.append(modelSelect);
+  controls.append(modelField);
+  var keyToggle = el2("button", "link-button", "覆盖 API Key");
+  keyToggle.type = "button";
+  controls.append(keyToggle);
+  var keyPanel = el2("form", "key-panel");
+  keyPanel.hidden = true;
+  controls.append(keyPanel);
+  var keyHint = el2("p", "hint");
+  var keyInput = el2("input", "input");
+  keyInput.type = "password";
+  keyInput.autocomplete = "off";
+  keyInput.spellcheck = false;
+  keyInput.placeholder = "粘贴 API Key";
+  var keyActions = el2("div", "actions");
   var saveButton = el2("button", "button primary", "保存");
   saveButton.type = "submit";
-  var clearButton = el2("button", "button", "清除覆盖");
+  var clearButton = el2("button", "button", "清除");
   clearButton.type = "button";
-  actions.append(saveButton, clearButton);
-  settingsPanel.append(hint, input, actions);
-  var status = { configured: false, hint: null, source: null };
+  keyActions.append(saveButton, clearButton);
+  keyPanel.append(keyHint, keyInput, keyActions);
+  var status = { configured: false, hint: null, source: null, model: null, models: [] };
+  var panel = null;
   var busy = false;
+  var SOURCE_SHORT = {
+    host: "OpenChamber 凭据",
+    opencode: "OpenCode 凭据",
+    stored: "面板覆盖",
+    env: "环境变量",
+    "auth-file": "auth.json"
+  };
   var setNotice = (message, tone2 = "info") => {
     notice.textContent = message;
     notice.dataset.tone = tone2;
     notice.hidden = !message;
   };
-  var renderWindows = (report) => {
+  var renderWindows = (data) => {
     windowsBox.replaceChildren();
-    const rows = [];
-    if (report.windows.fiveHour) {
-      const window2 = report.windows.fiveHour;
-      rows.push({
-        label: "5 小时",
-        percent: window2.cap > 0 ? Math.min(100, window2.used / window2.cap * 100) : null,
-        value: window2.cap > 0 ? `${money(window2.used)} / ${money(window2.cap)}` : money(window2.used),
-        resetAt: window2.resetAt
-      });
-    }
-    if (report.windows.weekly) {
-      const window2 = report.windows.weekly;
-      rows.push({
-        label: "本周",
-        percent: window2.cap > 0 ? Math.min(100, window2.used / window2.cap * 100) : null,
-        value: window2.cap > 0 ? `${money(window2.used)} / ${money(window2.cap)}` : money(window2.used),
-        resetAt: window2.resetAt
-      });
-    }
-    if (report.windows.monthly) {
-      const window2 = report.windows.monthly;
-      const used = window2.cap === null ? null : Math.max(0, window2.cap - window2.remaining);
-      rows.push({
-        label: "本月",
-        percent: window2.cap !== null && used !== null && window2.cap > 0 ? Math.min(100, used / window2.cap * 100) : null,
-        value: window2.cap === null ? `${money(window2.remaining)} 剩余` : `${money(window2.remaining)} / ${money(window2.cap)}`,
-        resetAt: window2.resetAt
-      });
-    }
-    for (const row of rows) {
+    for (const row of data.rows) {
       const item = el2("div", "window");
       const head = el2("div", "window-head");
       head.append(el2("span", "window-label", row.label), el2("span", "window-percent", percentText(row.percent)));
@@ -2119,56 +2101,50 @@ ${GUEST_UI_LOOK_CSS}`;
       windowsBox.append(item);
     }
   };
-  var renderFooter = (report) => {
+  var renderFooter = (data) => {
     footer.replaceChildren();
-    const credits = report.credits;
-    if (credits.monthlyRemaining !== null) {
+    if (data.remaining) {
       const line = el2("div", "credit-line");
-      line.append(el2("span", "credit-label", "剩余额度"), el2("span", "credit-value", money(credits.monthlyRemaining)));
+      line.append(el2("span", "credit-label", "剩余"), el2("span", "credit-value", data.remaining));
       footer.append(line);
     }
-    const extras = [];
-    if (credits.purchased > 0) extras.push(`加购 ${money(credits.purchased)}`);
-    if (credits.free > 0) extras.push(`赠送 ${money(credits.free)}`);
+    const extras = [data.purchased && `加购 ${data.purchased}`, data.free && `赠送 ${data.free}`].filter(Boolean);
     if (extras.length > 0) footer.append(el2("div", "credit-extra", extras.join(" · ")));
-    const metaParts = [];
-    const account = report.account.name || report.account.userName;
-    if (account) metaParts.push(account);
-    metaParts.push(`更新于 ${new Date(report.fetchedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`);
-    footer.append(el2("div", "updated", metaParts.join(" · ")));
+    const meta = [data.account, `更新 ${new Date(data.fetchedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`].filter(Boolean);
+    footer.append(el2("div", "updated", meta.join(" · ")));
   };
-  var renderStatus = () => {
-    const report = lastReport;
-    if (report) {
-      badge.textContent = report.plan.label ?? "已连接";
+  var renderBadge = () => {
+    if (panel?.planLabel) {
+      badge.textContent = panel.planLabel;
       badge.dataset.tone = "ok";
       return;
     }
-    badge.textContent = status.configured ? "已配置" : "未配置";
+    badge.textContent = status.configured ? "就绪" : "未配置";
     badge.dataset.tone = status.configured ? "ok" : "idle";
   };
-  var lastReport = null;
-  var SOURCE_LABEL = {
-    host: "Providers 页面（OpenCode 凭据库）",
-    opencode: "OpenCode 凭据库（只读）",
-    stored: "扩展面板保存的覆盖密钥",
-    env: "环境变量 COMMAND_CODE_API_KEY",
-    "auth-file": "~/.commandcode/auth.json"
+  var renderModels = () => {
+    const options = status.models.length > 0 ? status.models : status.model ? [status.model] : [];
+    modelSelect.replaceChildren();
+    for (const option of options) {
+      const node = el2("option", void 0, `${option.label} · $${option.monthlyUsd}`);
+      node.value = option.key;
+      if (option.key === status.model?.key) node.selected = true;
+      modelSelect.append(node);
+    }
+    modelSelect.disabled = options.length === 0;
+    modelField.hidden = options.length === 0;
   };
   var renderAll = () => {
-    if (lastReport) {
-      renderWindows(lastReport);
-      renderFooter(lastReport);
+    if (panel) {
+      renderWindows(panel);
+      renderFooter(panel);
     } else {
-      windowsBox.replaceChildren(el2(
-        "div",
-        "empty",
-        status.configured ? "正在读取用量…" : "在 设置 → Providers 里填入 Command Code API Key 后即可显示"
-      ));
+      windowsBox.replaceChildren(el2("div", "empty", status.configured ? "读取中…" : "先在 Providers 页填 Command Code API Key"));
       footer.replaceChildren();
     }
-    renderStatus();
-    hint.textContent = status.configured ? `密钥来源：${SOURCE_LABEL[status.source ?? ""] ?? status.source ?? "未知"}${status.hint ? `（${status.hint}）` : ""}。这里的覆盖密钥优先级最高。` : "尚未找到密钥。可在此粘贴，或在 设置 → Providers 里添加 CommandCode。";
+    renderBadge();
+    renderModels();
+    keyHint.textContent = status.configured ? `密钥：${SOURCE_SHORT[status.source ?? ""] ?? status.source ?? "未知"}${status.hint ? ` ${status.hint}` : ""}` : "未找到密钥";
   };
   var loadStatus = async () => {
     try {
@@ -2183,21 +2159,18 @@ ${GUEST_UI_LOOK_CSS}`;
     refreshButton.disabled = true;
     try {
       const payload = await request("GET", "/usage");
-      if (payload.ok && payload.report) {
-        lastReport = payload.report;
+      if (payload.ok && payload.panel) {
+        panel = payload.panel;
         setNotice("");
       } else {
-        lastReport = null;
-        setNotice(payload.error ?? "暂时无法获取用量", payload.configured === false ? "info" : "error");
+        panel = null;
+        setNotice(payload.error ?? "暂时取不到用量", payload.configured === false ? "info" : "error");
       }
       await loadStatus();
     } catch (error) {
-      lastReport = null;
+      panel = null;
       const message = error instanceof Error ? error.message : String(error);
-      setNotice(
-        message.includes("NO_SERVICE") ? "扩展服务未授权：请在 设置 → 扩展 中授予 service 能力" : message,
-        "error"
-      );
+      setNotice(message.includes("NO_SERVICE") ? "服务未授权：设置 → 扩展 里授予 service" : message, "error");
     } finally {
       busy = false;
       refreshButton.disabled = false;
@@ -2207,27 +2180,40 @@ ${GUEST_UI_LOOK_CSS}`;
   refreshButton.addEventListener("click", () => {
     void loadUsage();
   });
-  settingsToggle.addEventListener("click", () => {
-    settingsPanel.hidden = !settingsPanel.hidden;
-    settingsToggle.textContent = settingsPanel.hidden ? "用其他 API Key 覆盖" : "收起";
-    if (!settingsPanel.hidden) input.focus();
+  modelSelect.addEventListener("change", () => {
+    const selected = modelSelect.value;
+    if (!selected) return;
+    modelSelect.disabled = true;
+    void (async () => {
+      try {
+        await request("POST", "/settings", { model: selected });
+        await loadUsage();
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error), "error");
+        renderAll();
+      }
+    })();
   });
-  settingsPanel.addEventListener("submit", (event) => {
+  keyToggle.addEventListener("click", () => {
+    keyPanel.hidden = !keyPanel.hidden;
+    keyToggle.textContent = keyPanel.hidden ? "覆盖 API Key" : "收起";
+    if (!keyPanel.hidden) keyInput.focus();
+  });
+  keyPanel.addEventListener("submit", (event) => {
     event.preventDefault();
-    const key = input.value.trim();
+    const key = keyInput.value.trim();
     if (!key) {
-      setNotice("请先粘贴 API Key", "error");
+      setNotice("请粘贴 API Key", "error");
       return;
     }
     saveButton.disabled = true;
     void (async () => {
       try {
         await request("POST", "/credential", { key });
-        input.value = "";
-        settingsPanel.hidden = true;
-        settingsToggle.textContent = "用其他 API Key 覆盖";
-        setNotice("密钥已保存", "info");
-        await loadStatus();
+        keyInput.value = "";
+        keyPanel.hidden = true;
+        keyToggle.textContent = "覆盖 API Key";
+        setNotice("已保存");
         await loadUsage();
       } catch (error) {
         setNotice(error instanceof Error ? error.message : String(error), "error");
@@ -2240,16 +2226,16 @@ ${GUEST_UI_LOOK_CSS}`;
     void (async () => {
       try {
         await request("DELETE", "/credential");
-        lastReport = null;
-        await loadStatus();
-        renderAll();
-        setNotice("已清除覆盖密钥，改回 OpenChamber 保存的凭据", "info");
+        panel = null;
+        await loadUsage();
+        setNotice("已清除覆盖");
       } catch (error) {
         setNotice(error instanceof Error ? error.message : String(error), "error");
       }
     })();
   });
-  var start = () => {
+  host.onReady((context) => {
+    applyHostReady(context, document.documentElement);
     renderAll();
     void (async () => {
       await loadStatus();
@@ -2259,9 +2245,5 @@ ${GUEST_UI_LOOK_CSS}`;
     setInterval(() => {
       if (document.visibilityState === "visible") void loadUsage();
     }, 6e4);
-  };
-  host.onReady((context) => {
-    applyHostReady(context, document.documentElement);
-    start();
   });
 })();

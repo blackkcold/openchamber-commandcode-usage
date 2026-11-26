@@ -22,20 +22,36 @@ const CACHE_MS = 30_000;
 const ERROR_MAX = 2000;
 const BODY_MAX = 16 * 1024;
 
-// Community mapping of Command Code plan ids to the monthly credit allowance.
-// Only used to turn the monthly *remaining* balance into a percentage; the
-// 5-hour and weekly windows always come straight from the server.
+// Command Code meters a plan in "credits". The server reports the monthly
+// balance against a fixed cap per plan (GOAT: 70) and never reports a model,
+// while the docs price each model's monthly allowance separately: the same 70
+// credits buy $100 on DeepSeek V4.1 Flash and $70 on GLM-5.2. Percentages are
+// identical either way, so the plan counter stays the source of truth for the
+// bar and the model only scales the money shown next to it.
 const PLANS = new Map([
-  ['individual-go', { name: 'Go', monthlyCredits: 10 }],
-  ['individual-goat', { name: 'GOAT', monthlyCredits: 70 }],
-  ['individual-pro', { name: 'Pro', monthlyCredits: 30 }],
-  ['individual-pro-v1', { name: 'Pro', monthlyCredits: 80 }],
-  ['individual-provider', { name: 'Provider', monthlyCredits: 15 }],
-  ['individual-max', { name: 'Max', monthlyCredits: 150 }],
-  ['individual-ultra', { name: 'Ultra', monthlyCredits: 300 }],
-  ['teams-pro', { name: 'Teams Pro', monthlyCredits: 40 }],
+  ['individual-go', { name: 'Go', baseCredits: 10 }],
+  ['individual-goat', { name: 'GOAT', baseCredits: 70 }],
+  ['individual-pro', { name: 'Pro', baseCredits: 30 }],
+  ['individual-pro-v1', { name: 'Pro', baseCredits: 80 }],
+  ['individual-provider', { name: 'Provider', baseCredits: 15 }],
+  ['individual-max', { name: 'Max', baseCredits: 150 }],
+  ['individual-ultra', { name: 'Ultra', baseCredits: 300 }],
+  ['teams-pro', { name: 'Teams Pro', baseCredits: 40 }],
 ]);
 const PLAN_PREFIXES = [...PLANS.keys()].sort((a, b) => b.length - a.length);
+
+// Monthly allowance in dollars for a GOAT subscription, per the model table on
+// commandcode.ai/docs/plans/goat. A model missing here keeps the plan credits
+// as dollars, which is the conservative reading.
+const MODELS = new Map([
+  ['deepseek-v4.1-flash', { name: 'DeepSeek V4.1 Flash', monthlyUsd: 100 }],
+  ['glm-5.3-flash', { name: 'GLM-5.3 Flash', monthlyUsd: 100 }],
+  ['ling-3.1-flash', { name: 'Ling 3.1 Flash', monthlyUsd: 100 }],
+  ['glm-5.2', { name: 'GLM-5.2', monthlyUsd: 70 }],
+  ['tencent-hy3', { name: 'Tencent Hy3', monthlyUsd: 70 }],
+  ['qwen-3.8-27b', { name: 'Qwen 3.8 27B', monthlyUsd: 70 }],
+]);
+const DEFAULT_MODEL = 'deepseek-v4.1-flash';
 
 const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const num = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
@@ -58,13 +74,55 @@ const planOf = (planId) => {
   return prefix ? PLANS.get(prefix) : null;
 };
 
-const monthlyCapOf = (planId) => {
+const planBaseCredits = (planId) => {
   const override = num(Number(process.env.COMMANDCODE_MONTHLY_CAP));
   if (override !== null && override > 0) return override;
-  return planOf(planId)?.monthlyCredits ?? null;
+  return planOf(planId)?.baseCredits ?? null;
 };
 
 const planLabelOf = (planId) => planOf(planId)?.name ?? str(planId) ?? null;
+
+// The model only decides how many dollars one credit is worth. It is a local
+// preference (the server never reports it), so it lives next to the credential.
+const SETTINGS_PATH = path.join(DATA_DIR, 'settings.json');
+
+const readSettings = () => {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    return { model: str(parsed?.model) };
+  } catch {
+    return { model: null };
+  }
+};
+
+const writeSettings = (next) => {
+  ensureDataDir();
+  const temporary = `${SETTINGS_PATH}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(temporary, SETTINGS_PATH);
+};
+
+const normalizeModelKey = (value) => {
+  const requested = String(str(value) ?? '').toLowerCase().replace(/[\s_]+/g, '-');
+  if (!requested) return null;
+  for (const key of MODELS.keys()) {
+    if (requested === key || requested.includes(key)) return key;
+  }
+  return requested === 'default' ? DEFAULT_MODEL : null;
+};
+
+const pricingModel = () => {
+  const key = normalizeModelKey(readSettings().model ?? process.env.COMMANDCODE_MODEL) ?? DEFAULT_MODEL;
+  const known = MODELS.get(key);
+  return { key, label: known?.name ?? key, monthlyUsd: known?.monthlyUsd ?? null };
+};
+
+// Credits are the plan's internal unit; the same credit is worth more on a
+// model whose monthly allowance is larger. Returns dollars per credit.
+const compactMoney = (value) => {
+  const rounded = Math.round(value * 100) / 100;
+  return `$${Number.isInteger(rounded) ? rounded : rounded.toFixed(2)}`;
+};
 
 // ---------------------------------------------------------------- credentials
 
@@ -260,8 +318,6 @@ const percentOf = (used, cap) => {
   return Math.max(0, Math.min(100, (used / cap) * 100));
 };
 
-const money = (value) => `$${Number(value).toFixed(2)}`;
-
 const buildReport = (key) => {
   const cached = cache.get(key);
   if (cached && Date.now() - cached.at < CACHE_MS) return Promise.resolve(cached.report);
@@ -328,13 +384,14 @@ const fetchReport = async (key) => {
       label: planLabelOf(planId),
       status: str(subscription?.status),
       currentPeriodEnd: periodEnd,
+      baseCredits: planBaseCredits(planId),
     },
     windows: {
       fiveHour,
       weekly,
       monthly: monthlyRemaining === null ? null : {
         remaining: monthlyRemaining,
-        cap: monthlyCapOf(planId),
+        cap: planBaseCredits(planId),
         resetAt: periodEnd,
       },
     },
@@ -351,50 +408,59 @@ const fetchReport = async (key) => {
 
 // -------------------------------------------------------------- quota windows
 
-const spendWindow = (window, windowSeconds, usedPercent) => {
-  const value = window.cap > 0
-    ? { kind: 'spend', spent: window.used, limit: window.cap }
-    : undefined;
-  const result = {
-    usedPercent,
-    windowSeconds,
-    resetAt: window.resetAt,
-    valueLabel: window.cap > 0 ? `${money(window.used)} / ${money(window.cap)}` : money(window.used),
-  };
-  if (value) result.value = value;
-  return result;
+// Command Code meters in credits and the server never reports which model was
+// used, so the model is a local preference that only rescales money, never the
+// percentage. Read here (at output time) rather than inside the cached fetch, so
+// switching models takes effect on the next read instead of after the cache.
+const perCredit = (report) => {
+  const base = report.plan.baseCredits;
+  const allowance = pricingModel().monthlyUsd;
+  if (!base || !allowance) return 1;
+  return allowance / base;
 };
+
+// A window keeps one figure. Percentage windows emit no valueLabel, because the
+// native card prints valueLabel instead of the percentage and that left the
+// card showing "$3.28 / $14.00" where "23%" belongs. Money detail lives in the
+// extension panel; the month keeps its label because its dollars are the point.
+const percentWindow = (window, windowSeconds, usedPercent) => ({
+  usedPercent,
+  windowSeconds,
+  resetAt: window.resetAt,
+});
 
 const toQuotaUsage = (report) => {
   const windows = {};
+  const scale = perCredit(report);
+
   if (report.windows.fiveHour) {
     const window = report.windows.fiveHour;
-    windows['5h'] = spendWindow(window, FIVE_HOURS, percentOf(window.used, window.cap));
+    windows['5h'] = percentWindow(window, FIVE_HOURS, percentOf(window.used, window.cap));
   }
   if (report.windows.weekly) {
     const window = report.windows.weekly;
-    windows.weekly = spendWindow(window, ONE_WEEK, percentOf(window.used, window.cap));
+    windows.weekly = percentWindow(window, ONE_WEEK, percentOf(window.used, window.cap));
   }
 
   const monthly = report.windows.monthly;
   const remaining = report.credits.monthlyRemaining;
 
   // The server reports what is left of the monthly allowance, never how much
-  // was spent. With a known cap both numbers are the same fact, so the month
-  // is one window. Without a cap there is no percentage to draw and a plain
-  // balance row is the only thing left; it also covers accounts that report a
-  // remaining balance but no plan.
+  // was spent. With a known base both numbers are the same fact, so the month
+  // is one window; its dollars follow the model's own allowance. Without a
+  // base there is no percentage to draw and a plain balance row is the only
+  // thing left, which also covers accounts that report a balance but no plan.
   if (monthly && monthly.cap !== null) {
-    const cap = monthly.cap;
-    const spent = Math.max(0, cap - monthly.remaining);
+    const spentCredits = Math.max(0, monthly.cap - monthly.remaining);
     windows.monthly = {
-      usedPercent: percentOf(spent, cap),
+      usedPercent: percentOf(spentCredits, monthly.cap),
       resetAt: monthly.resetAt,
-      valueLabel: `${money(monthly.remaining)} / ${money(cap)}`,
-      value: { kind: 'spend', spent, limit: cap },
     };
   } else if (remaining !== null) {
-    windows.credits_balance = { usedPercent: null, valueLabel: money(remaining) };
+    windows.credits_balance = {
+      usedPercent: null,
+      valueLabel: compactMoney(remaining * scale),
+    };
   }
 
   return { windows };
@@ -406,6 +472,58 @@ const usageData = (report) => ({
   planLabel: report.plan.label ?? undefined,
   usage: toQuotaUsage(report),
 });
+
+// The panel shows the same windows but keeps the dollars, which the native card
+// now drops in favour of the percentage. Building the rows here keeps the
+// scaling rule in one place.
+const panelData = (report) => {
+  const scale = perCredit(report);
+  const rows = [];
+
+  const spend = (label, window, resetAt) => {
+    if (!window) return;
+    rows.push({
+      label,
+      percent: percentOf(window.used, window.cap),
+      value: window.cap > 0
+        ? `${compactMoney(window.used)} / ${compactMoney(window.cap)}`
+        : compactMoney(window.used),
+      resetAt,
+    });
+  };
+
+  spend('5 小时', report.windows.fiveHour, report.windows.fiveHour?.resetAt ?? null);
+  spend('本周', report.windows.weekly, report.windows.weekly?.resetAt ?? null);
+
+  const monthly = report.windows.monthly;
+  if (monthly && monthly.cap !== null) {
+    const spentCredits = Math.max(0, monthly.cap - monthly.remaining);
+    rows.push({
+      label: '本月',
+      percent: percentOf(spentCredits, monthly.cap),
+      value: `${compactMoney(spentCredits * scale)} / ${compactMoney(monthly.cap * scale)}`,
+      resetAt: monthly.resetAt,
+    });
+  } else if (report.credits.monthlyRemaining !== null) {
+    rows.push({
+      label: '本月',
+      percent: null,
+      value: compactMoney(report.credits.monthlyRemaining * scale),
+      resetAt: report.plan.currentPeriodEnd,
+    });
+  }
+
+  const remaining = report.credits.monthlyRemaining;
+  return {
+    rows,
+    remaining: remaining === null ? null : compactMoney(remaining * scale),
+    purchased: report.credits.purchased > 0 ? compactMoney(report.credits.purchased * scale) : null,
+    free: report.credits.free > 0 ? compactMoney(report.credits.free * scale) : null,
+    account: report.account.name || report.account.userName || null,
+    planLabel: report.plan.label,
+    fetchedAt: report.fetchedAt,
+  };
+};
 
 const failureData = (configured, error) => ({
   ok: false,
@@ -447,12 +565,12 @@ const maskKey = (key) => (key && key.length > 8 ? `…${key.slice(-4)}` : '已�
 const handleUsage = async (response) => {
   const { key, source } = await resolveKey(null);
   if (!key) {
-    send(response, 200, { ok: true, configured: false, error: '尚未填写 Command Code API Key', usage: null });
+    send(response, 200, { ok: true, configured: false, error: '尚未找到 API Key', usage: null });
     return;
   }
   try {
     const report = await buildReport(key);
-    send(response, 200, { ok: true, report, source });
+    send(response, 200, { ok: true, panel: panelData(report), source });
   } catch (error) {
     const message = error instanceof ApiError ? error.message : String(error?.message ?? error);
     send(response, 200, { ok: false, configured: true, error: message, source });
@@ -519,7 +637,38 @@ const server = http.createServer(async (request, response) => {
 
   if (url.pathname === '/status' && request.method === 'GET') {
     const { key, source } = await resolveKey(null);
-    send(response, 200, { ok: true, configured: Boolean(key), hint: key ? maskKey(key) : null, source });
+    const model = pricingModel();
+    send(response, 200, {
+      ok: true,
+      configured: Boolean(key),
+      hint: key ? maskKey(key) : null,
+      source,
+      model: { key: model.key, label: model.label, monthlyUsd: model.monthlyUsd },
+      models: [...MODELS.entries()].map(([key, entry]) => ({ key, label: entry.name, monthlyUsd: entry.monthlyUsd })),
+    });
+    return;
+  }
+
+  if (url.pathname === '/settings' && request.method === 'POST') {
+    void readBody(request).then((body) => {
+      const parsed = parseJson(body);
+      const requested = str(parsed?.model);
+      if (!requested) {
+        send(response, 400, { ok: false, error: '请选择一个模型' });
+        return;
+      }
+      const key = normalizeModelKey(requested);
+      const known = key ? MODELS.get(key) : null;
+      if (!known) {
+        send(response, 400, { ok: false, error: '未知模型' });
+        return;
+      }
+      writeSettings({ model: key });
+      const model = pricingModel();
+      send(response, 200, { ok: true, model: { key: model.key, label: model.label, monthlyUsd: model.monthlyUsd } });
+    }).catch(() => {
+      send(response, 400, { ok: false, error: '无法读取请求体' });
+    });
     return;
   }
 
