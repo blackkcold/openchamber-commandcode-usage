@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Command Code Usage</title>
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; }
+      body {
+        font-family: var(--surface-font, var(--oc-font, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif));
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--surface-foreground, var(--oc-fg, #111));
+        background: var(--surface-background, var(--oc-bg, transparent));
+        -webkit-font-smoothing: antialiased;
+      }
+      .shell {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        height: 100%;
+        padding: 14px;
+        overflow-y: auto;
+      }
+      .header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .title { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+      .title-text { letter-spacing: -0.01em; }
+      .badge {
+        font-size: 11px;
+        font-weight: 500;
+        padding: 2px 7px;
+        border-radius: 999px;
+        border: 1px solid var(--interactive-border, rgba(127, 127, 127, 0.35));
+        color: var(--surface-muted-foreground, #71717a);
+        white-space: nowrap;
+      }
+      .badge[data-tone="ok"] {
+        color: var(--status-success-text, #15803d);
+        border-color: color-mix(in srgb, currentColor 30%, transparent);
+        background: color-mix(in srgb, currentColor 10%, transparent);
+      }
+      .icon-button, .link-button, .button {
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+        border-radius: 8px;
+        border: 1px solid var(--interactive-border, rgba(127, 127, 127, 0.3));
+        background: transparent;
+        padding: 5px 10px;
+        transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+      }
+      .icon-button { font-size: 12px; color: var(--surface-muted-foreground, #71717a); }
+      .icon-button:hover, .button:hover { background: var(--interactive-hover, rgba(127, 127, 127, 0.12)); }
+      .icon-button:disabled, .button:disabled { opacity: 0.5; cursor: default; }
+      .button.primary {
+        background: var(--primary, #18181b);
+        color: var(--primary-foreground, #fff);
+        border-color: transparent;
+      }
+      .button.primary:hover { background: var(--primary, #18181b); opacity: 0.9; }
+      .link-button { align-self: flex-start; border: none; padding: 0; font-size: 12px; color: var(--surface-muted-foreground, #71717a); }
+      .link-button:hover { background: none; color: var(--surface-foreground, #111); }
+      .notice {
+        margin: 0;
+        padding: 8px 10px;
+        border-radius: 8px;
+        font-size: 12px;
+        color: var(--status-error-text, #b91c1c);
+        background: color-mix(in srgb, var(--status-error, #ef4444) 10%, transparent);
+      }
+      .notice[data-tone="info"] {
+        color: var(--surface-muted-foreground, #52525b);
+        background: var(--surface-muted, rgba(127, 127, 127, 0.1));
+      }
+      .body { display: flex; flex-direction: column; gap: 14px; }
+      .windows { display: flex; flex-direction: column; gap: 13px; }
+      .window { display: flex; flex-direction: column; gap: 6px; }
+      .window-head { display: flex; justify-content: space-between; align-items: baseline; }
+      .window-label { font-size: 12px; color: var(--surface-muted-foreground, #71717a); }
+      .window-percent { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+      .track {
+        height: 6px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: var(--surface-muted, rgba(127, 127, 127, 0.18));
+      }
+      .fill {
+        height: 100%;
+        border-radius: 999px;
+        background: var(--status-success, #22c55e);
+        transition: width 0.3s ease;
+      }
+      .fill[data-tone="warn"] { background: var(--status-warning, #f59e0b); }
+      .fill[data-tone="critical"] { background: var(--status-error, #ef4444); }
+      .fill[data-tone="neutral"] { background: var(--surface-muted-foreground, #a1a1aa); }
+      .window-meta {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11.5px;
+        color: var(--surface-muted-foreground, #71717a);
+        font-variant-numeric: tabular-nums;
+      }
+      .empty {
+        padding: 18px 12px;
+        border-radius: 10px;
+        text-align: center;
+        font-size: 12px;
+        color: var(--surface-muted-foreground, #71717a);
+        background: var(--surface-muted, rgba(127, 127, 127, 0.08));
+      }
+      .footer {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding-top: 12px;
+        border-top: 1px solid var(--interactive-border, rgba(127, 127, 127, 0.2));
+      }
+      .credit-line { display: flex; justify-content: space-between; align-items: baseline; }
+      .credit-label { font-size: 12px; color: var(--surface-muted-foreground, #71717a); }
+      .credit-value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+      .credit-extra, .updated { font-size: 11.5px; color: var(--surface-muted-foreground, #71717a); }
+      .settings {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding-top: 12px;
+        border-top: 1px solid var(--interactive-border, rgba(127, 127, 127, 0.2));
+      }
+      .settings-panel { display: flex; flex-direction: column; gap: 8px; }
+      .hint { margin: 0; font-size: 11.5px; color: var(--surface-muted-foreground, #71717a); }
+      .input {
+        width: 100%;
+        padding: 7px 9px;
+        border-radius: 8px;
+        border: 1px solid var(--interactive-border, rgba(127, 127, 127, 0.35));
+        background: var(--surface-elevated, rgba(127, 127, 127, 0.06));
+        color: inherit;
+        font: inherit;
+      }
+      .input:focus { outline: none; border-color: var(--interactive-focus-ring, #3b82f6); }
+      .actions { display: flex; gap: 8px; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script src="main.js"></script>
+  </body>
+</html>

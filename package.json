@@ -1,0 +1,43 @@
+{
+  "name": "openchamber-commandcode-usage",
+  "version": "1.0.0",
+  "description": "Command Code (GOAT) usage inside OpenChamber: 5-hour, weekly and monthly windows as a native usage provider.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blackkcold/openchamber-commandcode-usage.git"
+  },
+  "scripts": {
+    "build": "esbuild panel/main.ts --bundle --format=iife --target=es2022 --charset=utf8 --outfile=panel/main.js",
+    "check": "node --check service/main.js",
+    "test": "node test/contract.test.mjs"
+  },
+  "openchamber": {
+    "apiVersion": 1,
+    "engines": {
+      "openchamber": ">=2.6.0"
+    },
+    "contributes": {
+      "panel": {
+        "id": "commandcode-usage",
+        "name": "Command Code Usage",
+        "icon": "bar-chart-2",
+        "entry": "panel/index.html"
+      },
+      "service": {
+        "entry": "service/main.js",
+        "runtime": "host",
+        "provides": ["quota"]
+      },
+      "quota": {
+        "providers": []
+      }
+    }
+  },
+  "devDependencies": {
+    "@openchamber/sdk": "2.8.0",
+    "esbuild": "^0.25.10"
+  }
+}
